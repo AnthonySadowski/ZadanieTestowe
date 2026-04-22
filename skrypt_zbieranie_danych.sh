@@ -92,6 +92,8 @@ collect_data() {
     if [ -z "$S3_KEY" ]; then
         S3_KEY="${INSTANCE_ID}_report_$(date +%Y%m%d_%H%M%S).txt"
     fi
+
+    echo $OUTPUT_FILE >> File.txt
 }
 main() {
     echo "Rozpoczynanie zbierania danych..."

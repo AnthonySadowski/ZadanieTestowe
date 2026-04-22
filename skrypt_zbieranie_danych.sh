@@ -22,27 +22,7 @@ METADATA_URL="http://169.254.169.254/latest/meta-data"
 
 # Funkcje
 
-check_dependencies() {
-    local pkg_manager=""
-    if command -v apt-get &> /dev/null; then
-        pkg_manager="apt-get"
-    elif command -v yum &> /dev/null; then
-        pkg_manager="yum"
-    else
-        echo "Ostrzeżenie: Nie wykryto menedżera pakietów (apt/yum). Instalacja narzędzi może nie zadziałać."
-        return
-    fi
 
-    if ! command -v aws &> /dev/null; then
-        echo "Instalacja AWS CLI..."
-        $pkg_manager update -qq && $pkg_manager install -y awscli
-    fi
-    
-    if ! command -v curl &> /dev/null; then
-        echo "Instalacja curl..."
-        $pkg_manager update -qq && $pkg_manager install -y curl
-    fi
-}
 
 get_token() {
     # Pobranie tokena dla IMDSv2
@@ -116,7 +96,6 @@ collect_data() {
 main() {
     echo "Rozpoczynanie zbierania danych..."
     
-    check_dependencies
     get_token
     collect_data
     upload_to_s3

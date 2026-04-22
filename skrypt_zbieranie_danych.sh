@@ -1,36 +1,53 @@
 #!/bin/bash
 
-# Nazwa bucketu podawana jako argument
+
 if [ $# -lt 1 ]; then
-    echo "Błąd: Prosze podać bucket s3."
+    echo "Błąd: Brak wymaganego argumentu."
     echo "Użycie: $0 <nazwa_bucketu_s3> [nazwa_pliku_w_s3]"
-    echo "Przykład: $0 mojado-bucket-info ec2_report.txt"
+    echo "Przykład: $0 mojado-bucket-info"
     exit 1
 fi
 
 S3_BUCKET="$1"
-# Drugi Argument jako nazwa pliku
-if [ $# -ge 2 ]; then
-    S3_KEY="$2"
-else
-    S3_KEY="" 
-fi
+S3_KEY_ARG="$2" 
 
 
-OUTPUT_FILE="/tmp/ec2_instance_info_$$ .txt" # $$ to PID procesu, unikalność
+CURRENT_DIR="$(pwd)"
+
+LOCAL_OUTPUT_FILE="" 
+
 METADATA_URL="http://169.254.169.254/latest/meta-data"
 
-# Funkcje
+# --- Funkcje ---
 
+check_dependencies() {
+    local pkg_manager=""
+    if command -v apt-get &> /dev/null; then
+        pkg_manager="apt-get"
+    elif command -v yum &> /dev/null; then
+        pkg_manager="yum"
+    else
+        echo "Ostrzeżenie: Nie wykryto menedżera pakietów (apt/yum)."
+        return
+    fi
 
+    if ! command -v aws &> /dev/null; then
+        echo "Instalacja AWS CLI..."
+        $pkg_manager update -qq && $pkg_manager install -y awscli
+    fi
+    
+    if ! command -v curl &> /dev/null; then
+        echo "Instalacja curl..."
+        $pkg_manager update -qq && $pkg_manager install -y curl
+    fi
+}
 
 get_token() {
-    # Pobranie tokena dla IMDSv2
     local token_response
     token_response=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
     
     if [ -z "$token_response" ]; then
-        echo "Błąd krytyczny: Nie udało się uzyskać tokena IMDSv2. Czy skrypt jest uruchomiony na instancji EC2?"
+        echo "Błąd krytyczny: Nie udało się uzyskać tokena IMDSv2. Czy skrypt jest na instancji EC2?"
         exit 1
     fi
     export TOKEN="$token_response"
@@ -42,58 +59,66 @@ get_metadata() {
 }
 
 collect_data() {
-    echo "=== Raport z Instancji EC2 ===" > "$OUTPUT_FILE"
-    echo "Generowany: $(date)" >> "$OUTPUT_FILE"
-    echo "----------------------------------------" >> "$OUTPUT_FILE"
 
-    # Instance ID
     INSTANCE_ID=$(get_metadata "instance-id")
-    echo "Instance ID: $INSTANCE_ID" >> "$OUTPUT_FILE"
-
-    # Publiczny ip
-    PUBLIC_IP=$(get_metadata "public-ipv4")
-    echo "Public IP: ${PUBLIC_IP:-Brak}" >> "$OUTPUT_FILE"
-
-    # Prywatny IP
-    PRIVATE_IP=$(get_metadata "local-ipv4")
-    echo "Private IP: $PRIVATE_IP" >> "$OUTPUT_FILE"
-
-    # Security Groups
-    echo "Security Groups:" >> "$OUTPUT_FILE"
-    SG_LIST=$(get_metadata "security-groups")
-    if [ -n "$SG_LIST" ]; then
-        echo "$SG_LIST" | while read -r group; do
-            echo "  - $group" >> "$OUTPUT_FILE"
-        done
-    else
-        echo "  - Brak danych" >> "$OUTPUT_FILE"
-    fi
-    # System Operacyjny
-    echo "System operacyjny:" >> "$OUTPUT_FILE"
-    if [ -f /etc/os-release ]; then
-        OS_NAME=$(grep "^NAME=" /etc/os-release | cut -d'"' -f2)
-        OS_VERSION=$(grep "^VERSION=" /etc/os-release | cut -d'"' -f2)
-        echo "  Name: $OS_NAME" >> "$OUTPUT_FILE"
-        echo "  Version: $OS_VERSION" >> "$OUTPUT_FILE"
-    else
-        echo "  Nieznany (brak /etc/os-release)" >> "$OUTPUT_FILE"
-    fi
-
-    # Uzytkownik
-    echo "Users (bash/sh):" >> "$OUTPUT_FILE"
-    grep -E '/(bash|sh)$' /etc/passwd | cut -d':' -f1 | while read -r user; do
-        echo "  - $user" >> "$OUTPUT_FILE"
-    done
-
-    echo "----------------------------------------" >> "$OUTPUT_FILE"
-    echo "Koniec raportu." >> "$OUTPUT_FILE"
     
-    # Jeśli użytkownik nie podał nazwy pliku w S3, generujemy ją na podstawie Instance ID
-    if [ -z "$S3_KEY" ]; then
+
+    LOCAL_OUTPUT_FILE="${CURRENT_DIR}/ec2_info_${INSTANCE_ID}.txt"
+    
+    echo "Zapisywanie danych do: $LOCAL_OUTPUT_FILE"
+
+    {
+        echo "=== Raport z Instancji EC2 ==="
+        echo "Generowany: $(date)"
+        echo "----------------------------------------"
+        echo "Instance ID: $INSTANCE_ID"
+
+     
+        PUBLIC_IP=$(get_metadata "public-ipv4")
+        echo "Public IP: ${PUBLIC_IP:-Brak}"
+
+        PRIVATE_IP=$(get_metadata "local-ipv4")
+        echo "Private IP: $PRIVATE_IP"
+
+   
+        echo "Security Groups:"
+        SG_LIST=$(get_metadata "security-groups")
+        if [ -n "$SG_LIST" ]; then
+            echo "$SG_LIST" | while read -r group; do
+                echo "  - $group"
+            done
+        else
+            echo "  - Brak danych"
+        fi
+
+     
+        echo "Operating System:"
+        if [ -f /etc/os-release ]; then
+            OS_NAME=$(grep "^NAME=" /etc/os-release | cut -d'"' -f2)
+            OS_VERSION=$(grep "^VERSION=" /etc/os-release | cut -d'"' -f2)
+            echo "  Name: $OS_NAME"
+            echo "  Version: $OS_VERSION"
+        else
+            echo "  Nieznany (brak /etc/os-release)"
+        fi
+
+        # 6. Users
+        echo "Users (bash/sh):"
+        grep -E '/(bash|sh)$' /etc/passwd | cut -d':' -f1 | while read -r user; do
+            echo "  - $user"
+        done
+
+        echo "----------------------------------------"
+        echo "Koniec raportu."
+    } > "$LOCAL_OUTPUT_FILE"
+
+    if [ -n "$S3_KEY_ARG" ]; then
+        S3_KEY="$S3_KEY_ARG"
+    else
+        
         S3_KEY="${INSTANCE_ID}_report_$(date +%Y%m%d_%H%M%S).txt"
     fi
 
-    echo $OUTPUT_FILE >> File.txt
 }
 main() {
     echo "Rozpoczynanie zbierania danych..."
